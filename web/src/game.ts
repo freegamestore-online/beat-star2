@@ -1,659 +1,639 @@
-import kaplay, { type KAPLAYCtx, type GameObj } from "kaplay";
+import kaplay, { type GameObj, type KAPLAYCtx } from "kaplay";
 
+// ── Virtual canvas size ───────────────────────────────────────────────────────
 const VW = 480;
 const VH = 700;
 
-// ── Palette ──────────────────────────────────────────────────────────────────
-const COLORS = [
-  [255, 80, 120],   // hot pink
-  [255, 200, 40],   // golden yellow
-  [60, 200, 255],   // sky blue
-  [120, 255, 140],  // mint green
-  [200, 100, 255],  // purple
-  [255, 140, 60],   // orange
-] as const;
+// ── Lane layout ───────────────────────────────────────────────────────────────
+const LANE_COUNT = 4;
+const LANE_PAD   = 60;
+const LANE_W     = (VW - LANE_PAD * 2) / LANE_COUNT;
 
-// ── Beat timing ──────────────────────────────────────────────────────────────
-const BPM_START = 70;
-const BPM_MAX   = 130;
-const BPM_RAMP  = 0.5; // BPM increase per second
-
-// ── Hit window (seconds from beat) ───────────────────────────────────────────
-const HIT_PERFECT = 0.18;
-const HIT_GOOD    = 0.32;
-
-// ── Star spawn config ─────────────────────────────────────────────────────────
-const STAR_RADIUS   = 28;
-const STAR_FALL_MS  = 2200; // ms a star takes to fall to the hit zone
-const HIT_ZONE_Y    = VH - 90;
-const LANE_COUNT    = 5;
-const LANE_XS       = Array.from({ length: LANE_COUNT }, (_, i) =>
-  Math.round(VW * 0.1 + (VW * 0.8 / (LANE_COUNT - 1)) * i)
-);
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 function laneX(lane: number): number {
-  return LANE_XS[lane] ?? VW / 2;
+  return LANE_PAD + LANE_W * lane + LANE_W / 2;
 }
 
-function randomColor(): [number, number, number] {
-  const c = COLORS[Math.floor(Math.random() * COLORS.length)];
-  return c ? [c[0], c[1], c[2]] : [255, 255, 255];
+// ── Hit zone ──────────────────────────────────────────────────────────────────
+const HIT_Y       = VH - 110;
+const STAR_R      = 24;
+const HIT_PERFECT = 0.14; // seconds
+const HIT_GOOD    = 0.26;
+
+// ── Rhythm timing ─────────────────────────────────────────────────────────────
+const BPM_START   = 72;
+const BPM_MAX     = 128;
+const BPM_RAMP    = 0.4; // BPM per second
+const LEAD_TIME   = 1.8; // seconds a star travels before hitting the zone
+
+// ── Colour palette ────────────────────────────────────────────────────────────
+type RGB = [number, number, number];
+const PALETTE: RGB[] = [
+  [255,  80, 130],
+  [255, 200,  40],
+  [ 60, 200, 255],
+  [140, 255, 130],
+  [200, 100, 255],
+  [255, 150,  60],
+];
+
+function randColor(): RGB {
+  const c = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+  return c ?? [255, 255, 255];
 }
 
-// Draw a 5-pointed star path on a KAPLAY canvas context
-function drawStar(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
-  const outerR = r;
-  const innerR = r * 0.42;
-  const points = 5;
+function rgbStr(c: RGB): string {
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+// ── Draw a 5-pointed star ─────────────────────────────────────────────────────
+function pathStar(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
+  const inner = r * 0.42;
   ctx.beginPath();
-  for (let i = 0; i < points * 2; i++) {
-    const angle = (Math.PI / points) * i - Math.PI / 2;
-    const radius = i % 2 === 0 ? outerR : innerR;
-    const x = cx + Math.cos(angle) * radius;
-    const y = cy + Math.sin(angle) * radius;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+  for (let i = 0; i < 10; i++) {
+    const a = (Math.PI / 5) * i - Math.PI / 2;
+    const rad = i % 2 === 0 ? r : inner;
+    if (i === 0) ctx.moveTo(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad);
+    else         ctx.lineTo(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad);
   }
   ctx.closePath();
 }
 
-// ── Main export ───────────────────────────────────────────────────────────────
+// ── Particle burst ────────────────────────────────────────────────────────────
+function burst(k: KAPLAYCtx, x: number, y: number, col: RGB): void {
+  const N = 16;
+  for (let i = 0; i < N; i++) {
+    const a  = (Math.PI * 2 * i) / N + Math.random() * 0.4;
+    const sp = 90 + Math.random() * 160;
+    const sz = 4 + Math.random() * 5;
+    const vx = Math.cos(a) * sp;
+    const vy = Math.sin(a) * sp;
+    const p  = k.add([
+      k.rect(sz, sz, { radius: sz / 2 }),
+      k.pos(x, y),
+      k.color(...col),
+      k.opacity(1),
+      k.anchor("center"),
+    ]);
+    let age = 0;
+    const life = 0.5 + Math.random() * 0.25;
+    p.onUpdate(() => {
+      age += k.dt();
+      p.pos.x += vx * k.dt();
+      p.pos.y += vy * k.dt();
+      (p as GameObj & { pos: { y: number } }).pos.y += 280 * k.dt() * (age / life);
+      p.opacity = Math.max(0, 1 - age / life);
+      if (age >= life) k.destroy(p);
+    });
+  }
+}
+
+// ── Floating label ────────────────────────────────────────────────────────────
+function floatLabel(k: KAPLAYCtx, x: number, y: number, label: string, col: RGB): void {
+  const t = k.add([
+    k.text(label, { size: 26 }),
+    k.pos(x, y),
+    k.anchor("center"),
+    k.color(...col),
+    k.opacity(1),
+  ]);
+  let age = 0;
+  t.onUpdate(() => {
+    age += k.dt();
+    t.pos.y -= 55 * k.dt();
+    t.opacity = Math.max(0, 1 - age / 0.75);
+    if (age > 0.75) k.destroy(t);
+  });
+}
+
+// ── Twinkling background stars ────────────────────────────────────────────────
+function addBgStars(k: KAPLAYCtx): void {
+  for (let i = 0; i < 60; i++) {
+    const bx    = Math.random() * VW;
+    const by    = Math.random() * VH;
+    const r     = 0.8 + Math.random() * 1.8;
+    const phase = Math.random() * Math.PI * 2;
+    const speed = 0.8 + Math.random() * 1.4;
+    const s = k.add([
+      k.pos(bx, by),
+      k.circle(r),
+      k.color(210, 210, 255),
+      k.opacity(0.5),
+    ]);
+    let ph = phase;
+    s.onUpdate(() => {
+      ph += k.dt() * speed;
+      s.opacity = 0.15 + 0.4 * (0.5 + 0.5 * Math.sin(ph));
+    });
+  }
+}
+
+// ── Hit-zone ring (drawn via custom draw) ─────────────────────────────────────
+function addHitZone(k: KAPLAYCtx): void {
+  // Horizontal glow bar
+  k.add([
+    k.rect(VW, 4),
+    k.pos(0, HIT_Y - 2),
+    k.color(100, 80, 220),
+    k.opacity(0.35),
+  ]);
+
+  for (let lane = 0; lane < LANE_COUNT; lane++) {
+    const x = laneX(lane);
+
+    // Lane guide line
+    k.add([
+      k.rect(2, HIT_Y),
+      k.pos(x - 1, 0),
+      k.color(80, 60, 160),
+      k.opacity(0.15),
+    ]);
+
+    // Target ring — drawn as a custom object
+    const ring = k.add([
+      k.pos(x, HIT_Y),
+      k.anchor("center"),
+      k.opacity(0.45),
+    ]);
+    ring.onDraw(() => {
+      const ctx = ring.canvas?.ctx as CanvasRenderingContext2D | undefined;
+      if (!ctx) {
+        // fallback: draw via k.drawCircle
+        k.drawCircle({ pos: k.vec2(0, 0), radius: STAR_R + 6, outline: { color: k.rgb(100, 80, 220), width: 3 }, fill: false });
+        return;
+      }
+      ctx.save();
+      ctx.strokeStyle = "rgba(100,80,220,0.7)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, STAR_R + 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    });
+  }
+}
+
+// ── Main entry point ──────────────────────────────────────────────────────────
 export function startGame(
   canvas: HTMLCanvasElement,
-  onScore: (n: number) => void
+  onScore: (n: number) => void,
 ): () => void {
   const k = kaplay({
     canvas,
-    width: VW,
+    width:  VW,
     height: VH,
     letterbox: true,
-    background: [12, 8, 28],
+    background: [10, 6, 26],
     global: false,
     pixelDensity: Math.min(window.devicePixelRatio || 1, 2),
   });
 
-  // ── Shared state across scenes ────────────────────────────────────────────
-  let highScore = parseInt(localStorage.getItem("beatstar2_hs") ?? "0", 10) || 0;
+  let globalHigh = parseInt(localStorage.getItem("beatstar2_hs") ?? "0", 10) || 0;
 
-  // ── Utility: draw a glowing star shape via drawNode ───────────────────────
-  function makeStarNode(
-    k: KAPLAYCtx,
-    x: number,
-    y: number,
-    col: [number, number, number],
-    radius: number,
-    tag: string
-  ): GameObj {
-    const [r, g, b] = col;
-    return k.add([
-      k.pos(x, y),
-      k.anchor("center"),
-      k.area({ shape: new k.Circle(radius * 0.7) }),
-      k.color(r, g, b),
-      k.opacity(1),
-      {
-        starRadius: radius,
-        starColor: col,
-        pulse: 0,
-        draw(this: GameObj & { starRadius: number; starColor: [number,number,number]; pulse: number }) {
-          const ctx = (k as unknown as { _ctx: CanvasRenderingContext2D })._ctx;
-          if (!ctx) return;
-          const pr = this.starRadius + Math.sin(this.pulse * 6) * 3;
-          // glow
-          const grad = ctx.createRadialGradient(0, 0, pr * 0.2, 0, 0, pr * 1.8);
-          grad.addColorStop(0, `rgba(${r},${g},${b},0.55)`);
-          grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
-          ctx.save();
-          ctx.fillStyle = grad;
-          ctx.beginPath();
-          ctx.arc(0, 0, pr * 1.8, 0, Math.PI * 2);
-          ctx.fill();
-          // star body
-          ctx.fillStyle = `rgb(${r},${g},${b})`;
-          drawStar(ctx, 0, 0, pr);
-          ctx.fill();
-          // white shine
-          ctx.fillStyle = "rgba(255,255,255,0.35)";
-          drawStar(ctx, -pr * 0.1, -pr * 0.15, pr * 0.45);
-          ctx.fill();
-          ctx.restore();
-        },
-        update(this: GameObj & { pulse: number }) {
-          this.pulse += k.dt();
-        },
-      },
-      tag,
-    ]);
-  }
-
-  // ── Particle burst ────────────────────────────────────────────────────────
-  function burst(x: number, y: number, col: [number, number, number]): void {
-    const [r, g, b] = col;
-    for (let i = 0; i < 14; i++) {
-      const angle = (Math.PI * 2 * i) / 14 + Math.random() * 0.4;
-      const speed = 80 + Math.random() * 140;
-      const size  = 4 + Math.random() * 6;
-      const vx    = Math.cos(angle) * speed;
-      const vy    = Math.sin(angle) * speed;
-      const p = k.add([
-        k.pos(x, y),
-        k.rect(size, size, { radius: size / 2 }),
-        k.color(r, g, b),
-        k.opacity(1),
-        k.anchor("center"),
-        {
-          vx, vy,
-          life: 0.55 + Math.random() * 0.25,
-          age: 0,
-          update(this: GameObj & { vx: number; vy: number; life: number; age: number }) {
-            this.age += k.dt();
-            this.pos.x += this.vx * k.dt();
-            this.pos.y += this.vy * k.dt();
-            this.vy += 300 * k.dt();
-            this.opacity = Math.max(0, 1 - this.age / this.life);
-            if (this.age >= this.life) k.destroy(p);
-          },
-        },
-      ]);
-    }
-  }
-
-  // ── Floating score text ───────────────────────────────────────────────────
-  function floatText(x: number, y: number, text: string, col: [number, number, number]): void {
-    const [r, g, b] = col;
-    const t = k.add([
-      k.text(text, { size: 28, font: "sans-serif" }),
-      k.pos(x, y),
-      k.anchor("center"),
-      k.color(r, g, b),
-      k.opacity(1),
-      {
-        age: 0,
-        update(this: GameObj & { age: number }) {
-          this.age += k.dt();
-          this.pos.y -= 60 * k.dt();
-          this.opacity = Math.max(0, 1 - this.age / 0.8);
-          if (this.age > 0.8) k.destroy(t);
-        },
-      },
-    ]);
-  }
-
-  // ── Twinkling background stars ────────────────────────────────────────────
-  function addBackgroundStars(): void {
-    for (let i = 0; i < 55; i++) {
-      const bx = Math.random() * VW;
-      const by = Math.random() * VH;
-      const br = 1 + Math.random() * 2;
-      const phase = Math.random() * Math.PI * 2;
-      k.add([
-        k.pos(bx, by),
-        k.circle(br),
-        k.color(200, 200, 255),
-        k.opacity(0.4 + Math.random() * 0.4),
-        {
-          phase,
-          update(this: GameObj & { phase: number }) {
-            this.phase += k.dt() * (1 + Math.random() * 0.5);
-            this.opacity = 0.2 + 0.35 * (0.5 + 0.5 * Math.sin(this.phase));
-          },
-        },
-      ]);
-    }
-  }
-
-  // ── Hit-zone lane dots ────────────────────────────────────────────────────
-  function addHitZone(): void {
-    for (let lane = 0; lane < LANE_COUNT; lane++) {
-      const x = laneX(lane);
-      k.add([
-        k.pos(x, HIT_ZONE_Y),
-        k.circle(STAR_RADIUS * 0.85),
-        k.color(60, 60, 100),
-        k.opacity(0.35),
-        k.anchor("center"),
-      ]);
-      // Lane line
-      k.add([
-        k.pos(x, 0),
-        k.rect(2, HIT_ZONE_Y),
-        k.color(60, 60, 100),
-        k.opacity(0.12),
-        k.anchor("top"),
-      ]);
-    }
-    // Horizontal hit bar
-    k.add([
-      k.pos(0, HIT_ZONE_Y),
-      k.rect(VW, 3),
-      k.color(100, 80, 200),
-      k.opacity(0.3),
-    ]);
-  }
-
-  // ── Lane flash on hit ─────────────────────────────────────────────────────
-  function flashLane(k: KAPLAYCtx, lane: number, col: [number, number, number]): void {
-    const [r, g, b] = col;
-    const f = k.add([
-      k.pos(laneX(lane), HIT_ZONE_Y),
-      k.circle(STAR_RADIUS * 1.3),
-      k.color(r, g, b),
-      k.opacity(0.7),
-      k.anchor("center"),
-      {
-        age: 0,
-        update(this: GameObj & { age: number }) {
-          this.age += k.dt();
-          this.opacity = Math.max(0, 0.7 - this.age / 0.22);
-          if (this.age > 0.22) k.destroy(f);
-        },
-      },
-    ]);
-  }
-
-  // ── MENU scene ────────────────────────────────────────────────────────────
+  // ── MENU ──────────────────────────────────────────────────────────────────
   k.scene("menu", () => {
-    addBackgroundStars();
+    addBgStars(k);
 
     // Title
     k.add([
-      k.text("⭐ BEAT STAR ⭐", { size: 44, font: "sans-serif" }),
+      k.text("BEAT STAR", { size: 52, font: "sans-serif" }),
       k.anchor("center"),
-      k.pos(VW / 2, VH * 0.22),
-      k.color(255, 220, 60),
+      k.pos(VW / 2, VH * 0.18),
+      k.color(255, 220, 50),
     ]);
     k.add([
-      k.text("Tap stars as they hit the zone!", { size: 20, font: "sans-serif" }),
+      k.text("⭐  ⭐  ⭐  ⭐", { size: 28, font: "sans-serif" }),
       k.anchor("center"),
-      k.pos(VW / 2, VH * 0.34),
-      k.color(180, 160, 255),
+      k.pos(VW / 2, VH * 0.27),
+      k.color(255, 180, 60),
+    ]);
+    k.add([
+      k.text("Tap the stars when they hit the ring!", { size: 18, font: "sans-serif" }),
+      k.anchor("center"),
+      k.pos(VW / 2, VH * 0.37),
+      k.color(170, 150, 255),
     ]);
 
-    // High score
-    if (highScore > 0) {
+    if (globalHigh > 0) {
       k.add([
-        k.text(`Best: ${highScore}`, { size: 22, font: "sans-serif" }),
+        k.text(`🏆 Best: ${globalHigh}`, { size: 22, font: "sans-serif" }),
         k.anchor("center"),
-        k.pos(VW / 2, VH * 0.43),
-        k.color(255, 200, 60),
+        k.pos(VW / 2, VH * 0.46),
+        k.color(255, 210, 60),
       ]);
     }
 
-    // Animated demo stars
-    for (let i = 0; i < LANE_COUNT; i++) {
-      const col = randomColor();
-      const s = makeStarNode(k, laneX(i), VH * 0.55 + (i % 2) * 30, col, STAR_RADIUS, "demo");
-      let t = 0;
-      s.onUpdate(() => {
-        t += k.dt();
-        s.pos.y = VH * 0.55 + (i % 2) * 30 + Math.sin(t * 2 + i) * 12;
-      });
-    }
+    // Key guide
+    k.add([
+      k.text("Keys: A  S  D  F   or tap lanes", { size: 15, font: "sans-serif" }),
+      k.anchor("center"),
+      k.pos(VW / 2, VH * 0.86),
+      k.color(110, 90, 170),
+    ]);
 
     // Play button
     const btn = k.add([
-      k.rect(200, 64, { radius: 32 }),
+      k.rect(210, 66, { radius: 33 }),
       k.color(120, 80, 255),
       k.area(),
       k.anchor("center"),
-      k.pos(VW / 2, VH * 0.76),
-      {
-        pulse: 0,
-        update(this: GameObj & { pulse: number }) {
-          this.pulse += k.dt();
-          const s = 1 + 0.04 * Math.sin(this.pulse * 3);
-          this.scale = k.vec2(s, s);
-        },
-      },
+      k.pos(VW / 2, VH * 0.63),
     ]);
+    let btnPulse = 0;
+    btn.onUpdate(() => {
+      btnPulse += k.dt();
+      const s = 1 + 0.045 * Math.sin(btnPulse * 2.8);
+      btn.scale = k.vec2(s, s);
+    });
     k.add([
-      k.text("▶  PLAY", { size: 26, font: "sans-serif" }),
+      k.text("▶  PLAY", { size: 28, font: "sans-serif" }),
       k.anchor("center"),
-      k.pos(VW / 2, VH * 0.76),
+      k.pos(VW / 2, VH * 0.63),
       k.color(255, 255, 255),
     ]);
 
-    // Keyboard hint
-    k.add([
-      k.text("Keys: A S D F G  or  tap lanes", { size: 14, font: "sans-serif" }),
-      k.anchor("center"),
-      k.pos(VW / 2, VH * 0.88),
-      k.color(120, 100, 180),
-    ]);
+    // Animated preview stars
+    for (let lane = 0; lane < LANE_COUNT; lane++) {
+      const col = PALETTE[lane] ?? randColor();
+      const baseY = VH * 0.76 + (lane % 2) * 18;
+      const preview = k.add([
+        k.pos(laneX(lane), baseY),
+        k.anchor("center"),
+        k.opacity(0.85),
+      ]);
+      let ph = lane * 1.1;
+      preview.onDraw(() => {
+        k.drawCircle({ pos: k.vec2(0, 0), radius: STAR_R * 0.7, color: k.rgb(...col) });
+      });
+      preview.onUpdate(() => {
+        ph += k.dt();
+        preview.pos.y = baseY + Math.sin(ph * 2.2) * 10;
+      });
+    }
 
     btn.onClick(() => k.go("play"));
     k.onKeyPress("space", () => k.go("play"));
     k.onKeyPress("enter", () => k.go("play"));
   });
 
-  // ── PLAY scene ────────────────────────────────────────────────────────────
+  // ── PLAY ──────────────────────────────────────────────────────────────────
   k.scene("play", () => {
-    addBackgroundStars();
-    addHitZone();
+    addBgStars(k);
+    addHitZone(k);
 
-    let score       = 0;
-    let combo       = 0;
-    let maxCombo    = 0;
-    let lives       = 3;
-    let bpm         = BPM_START;
-    let elapsed     = 0;
-    let beatPhase   = 0;   // 0–1 within current beat
-    let beatCount   = 0;
+    let score    = 0;
+    let combo    = 0;
+    let maxCombo = 0;
+    let lives    = 3;
+    let gameTime = 0;
+    let elapsed  = 0;
     onScore(0);
 
-    // ── UI ──────────────────────────────────────────────────────────────────
+    // ── Score / combo UI ────────────────────────────────────────────────────
     const scoreTxt = k.add([
-      k.text("0", { size: 32, font: "sans-serif" }),
-      k.pos(VW / 2, 18),
+      k.text("0", { size: 34, font: "sans-serif" }),
+      k.pos(VW / 2, 14),
       k.anchor("top"),
       k.color(255, 255, 255),
     ]);
+
     const comboTxt = k.add([
       k.text("", { size: 20, font: "sans-serif" }),
-      k.pos(VW / 2, 56),
+      k.pos(VW / 2, 54),
       k.anchor("top"),
-      k.color(255, 200, 60),
+      k.color(255, 210, 50),
     ]);
 
-    // Lives (hearts)
+    // Hearts
     const heartObjs: GameObj[] = [];
     for (let i = 0; i < 3; i++) {
       heartObjs.push(k.add([
-        k.text("❤️", { size: 24, font: "sans-serif" }),
-        k.pos(12 + i * 36, 12),
+        k.text("❤️", { size: 26, font: "sans-serif" }),
+        k.pos(14 + i * 38, 12),
         k.anchor("topleft"),
       ]));
     }
 
-    function updateHearts(): void {
+    function refreshHearts(): void {
       for (let i = 0; i < 3; i++) {
-        const h = heartObjs[i];
+        const h = heartObjs[i] as (GameObj & { text: string }) | undefined;
         if (!h) continue;
         h.text = i < lives ? "❤️" : "🖤";
       }
     }
 
-    // Beat indicator (top-right pulse ring)
-    const beatRing = k.add([
-      k.pos(VW - 28, 28),
-      k.circle(14),
-      k.color(120, 80, 255),
-      k.opacity(0.5),
+    // Beat pulse ring (top-right)
+    const pulseRing = k.add([
+      k.pos(VW - 30, 30),
       k.anchor("center"),
+      k.opacity(0.5),
     ]);
+    let beatPhase = 0;
+    pulseRing.onDraw(() => {
+      const r = 14 + 6 * (1 - beatPhase);
+      k.drawCircle({
+        pos: k.vec2(0, 0),
+        radius: r,
+        color: k.rgb(120, 80, 255),
+        opacity: 0.3 + 0.7 * Math.max(0, 1 - beatPhase * 2),
+      });
+    });
 
-    // ── Active stars on screen ───────────────────────────────────────────────
-    interface StarData {
+    // Lane key labels (A S D F)
+    const KEY_LABELS = ["A", "S", "D", "F"];
+    for (let lane = 0; lane < LANE_COUNT; lane++) {
+      k.add([
+        k.text(KEY_LABELS[lane] ?? "", { size: 16, font: "sans-serif" }),
+        k.pos(laneX(lane), HIT_Y + STAR_R + 14),
+        k.anchor("center"),
+        k.color(100, 80, 180),
+        k.opacity(0.6),
+      ]);
+    }
+
+    // ── Star note data ───────────────────────────────────────────────────────
+    interface Note {
       obj: GameObj;
       lane: number;
-      beatTime: number; // game-time when it should be hit
-      col: [number, number, number];
-      hit: boolean;
-      missed: boolean;
+      hitTime: number; // game-time when it should be tapped
+      col: RGB;
+      done: boolean;
     }
-    const stars: StarData[] = [];
+    const notes: Note[] = [];
 
-    // ── Spawn a star for a given beat ────────────────────────────────────────
-    function spawnStar(beatTime: number): void {
-      const lane = Math.floor(Math.random() * LANE_COUNT);
-      const col  = randomColor();
-      // Star starts above screen, arrives at HIT_ZONE_Y at beatTime
-      const travelSecs = STAR_FALL_MS / 1000;
-      const spawnY = HIT_ZONE_Y - VH * 1.1; // well above top
-      const obj = makeStarNode(k, laneX(lane), spawnY, col, STAR_RADIUS, "star");
+    // ── Beat scheduling ──────────────────────────────────────────────────────
+    // We track cumulative beat times accounting for BPM ramp
+    const beatTimes: number[] = [];
+    let nextBeatIdx  = 0;
+    let scheduledTo  = 0; // how far ahead we've generated beat times (game-time)
 
-      stars.push({ obj, lane, beatTime, col, hit: false, missed: false });
-    }
-
-    // ── Schedule upcoming beats ──────────────────────────────────────────────
-    // We look STAR_FALL_MS ahead and pre-spawn stars
-    let nextBeatIndex = 0; // which beat number to spawn next
-    let gameTime      = 0;
-
-    function beatTimeForIndex(n: number): number {
-      // Simple: evenly spaced at current BPM (we approximate; BPM changes slowly)
-      // For simplicity, pre-compute beat times as cumulative sum
-      // We'll just use: each beat = 60/bpm seconds, but bpm grows over time
-      // Simple approach: beat n starts at n * (60/BPM_START) — good enough for fun
-      return n * (60 / BPM_START);
-    }
-
-    // Spawn beats ahead of time
-    function scheduleBeats(): void {
-      const lookAhead = (STAR_FALL_MS / 1000) + 0.5;
-      while (beatTimeForIndex(nextBeatIndex) <= gameTime + lookAhead) {
-        const bt = beatTimeForIndex(nextBeatIndex);
-        // Skip some beats for interest (not every beat has a star)
-        const density = Math.min(0.95, 0.4 + elapsed * 0.008);
-        if (Math.random() < density) {
-          spawnStar(bt);
-        }
-        nextBeatIndex++;
+    function generateBeats(upTo: number): void {
+      // Extend beatTimes array until we cover `upTo` seconds of game time
+      let t = beatTimes.length === 0 ? 0 : (beatTimes[beatTimes.length - 1] ?? 0);
+      while (t <= upTo) {
+        const bpm = Math.min(BPM_MAX, BPM_START + t * BPM_RAMP);
+        const beatLen = 60 / bpm;
+        t += beatLen;
+        beatTimes.push(t);
       }
+      scheduledTo = upTo;
+    }
+
+    function spawnNote(hitTime: number): void {
+      // Randomly skip ~35% of beats at start, fewer as game progresses
+      const density = Math.min(0.9, 0.55 + elapsed * 0.006);
+      if (Math.random() > density) return;
+
+      const lane = Math.floor(Math.random() * LANE_COUNT);
+      const col  = randColor();
+
+      // Star object — drawn as a glowing circle (KAPLAY-safe, no internal ctx)
+      const obj = k.add([
+        k.pos(laneX(lane), -STAR_R * 2),
+        k.anchor("center"),
+        k.opacity(1),
+      ]);
+
+      let pulse = Math.random() * Math.PI * 2;
+      obj.onDraw(() => {
+        pulse += 0.06;
+        const glow = 1 + 0.12 * Math.sin(pulse);
+        // Outer glow ring
+        k.drawCircle({ pos: k.vec2(0, 0), radius: STAR_R * 1.55 * glow, color: k.rgb(...col), opacity: 0.18 });
+        // Mid glow
+        k.drawCircle({ pos: k.vec2(0, 0), radius: STAR_R * 1.2 * glow,  color: k.rgb(...col), opacity: 0.30 });
+        // Core
+        k.drawCircle({ pos: k.vec2(0, 0), radius: STAR_R, color: k.rgb(...col) });
+        // Shine
+        k.drawCircle({ pos: k.vec2(-STAR_R * 0.22, -STAR_R * 0.25), radius: STAR_R * 0.32, color: k.rgb(255, 255, 255), opacity: 0.45 });
+        // Star points (5 small dots)
+        for (let i = 0; i < 5; i++) {
+          const a = (Math.PI * 2 * i) / 5 - Math.PI / 2;
+          const px = Math.cos(a) * STAR_R * 0.72;
+          const py = Math.sin(a) * STAR_R * 0.72;
+          k.drawCircle({ pos: k.vec2(px, py), radius: 3.5, color: k.rgb(255, 255, 255), opacity: 0.5 });
+        }
+      });
+
+      notes.push({ obj, lane, hitTime, col, done: false });
     }
 
     // ── Hit logic ────────────────────────────────────────────────────────────
-    function tryHitLane(lane: number): void {
-      // Find the closest star in this lane that hasn't been hit/missed
-      let best: StarData | null = null;
+    function tryHit(lane: number): void {
+      let best: Note | null = null;
       let bestDiff = Infinity;
-      for (const sd of stars) {
-        if (sd.lane !== lane || sd.hit || sd.missed) continue;
-        const diff = Math.abs(sd.beatTime - gameTime);
-        if (diff < bestDiff) {
-          bestDiff = diff;
-          best = sd;
-        }
+      for (const n of notes) {
+        if (n.lane !== lane || n.done) continue;
+        const diff = Math.abs(n.hitTime - gameTime);
+        if (diff < bestDiff) { bestDiff = diff; best = n; }
       }
-      if (!best) return;
+
+      if (!best) {
+        // No note nearby — show "early" feedback
+        floatLabel(k, laneX(lane), HIT_Y - 20, "EARLY", [180, 100, 100]);
+        return;
+      }
 
       if (bestDiff <= HIT_PERFECT) {
-        // Perfect hit
         combo++;
         if (combo > maxCombo) maxCombo = combo;
-        const pts = 100 + combo * 10;
+        const pts = 100 + combo * 15;
         score += pts;
         onScore(score);
         scoreTxt.text = String(score);
-        comboTxt.text = combo > 1 ? `✨ x${combo} COMBO!` : "PERFECT!";
-        burst(best.obj.pos.x, best.obj.pos.y, best.col);
-        flashLane(k, lane, best.col);
-        floatText(best.obj.pos.x, best.obj.pos.y - 20, `+${pts}`, best.col);
+        comboTxt.text = combo >= 3 ? `✨ x${combo} COMBO!` : "PERFECT!";
+        burst(k, best.obj.pos.x, best.obj.pos.y, best.col);
+        lanePop(best.lane, best.col);
+        floatLabel(k, best.obj.pos.x, best.obj.pos.y - 20, `+${pts}`, best.col);
         k.destroy(best.obj);
-        best.hit = true;
+        best.done = true;
       } else if (bestDiff <= HIT_GOOD) {
-        // Good hit
         combo++;
         if (combo > maxCombo) maxCombo = combo;
-        const pts = 50 + combo * 5;
+        const pts = 50 + combo * 8;
         score += pts;
         onScore(score);
         scoreTxt.text = String(score);
-        comboTxt.text = combo > 1 ? `⭐ x${combo} COMBO` : "GOOD!";
-        burst(best.obj.pos.x, best.obj.pos.y, best.col);
-        flashLane(k, lane, best.col);
-        floatText(best.obj.pos.x, best.obj.pos.y - 20, `+${pts}`, [200, 255, 150]);
+        comboTxt.text = combo >= 3 ? `⭐ x${combo} COMBO` : "GOOD!";
+        burst(k, best.obj.pos.x, best.obj.pos.y, best.col);
+        lanePop(best.lane, best.col);
+        floatLabel(k, best.obj.pos.x, best.obj.pos.y - 20, `+${pts}`, [190, 255, 160]);
         k.destroy(best.obj);
-        best.hit = true;
+        best.done = true;
       } else {
-        // Miss (tapped too early or too late)
-        floatText(laneX(lane), HIT_ZONE_Y - 20, "MISS", [255, 80, 80]);
         combo = 0;
         comboTxt.text = "";
+        floatLabel(k, laneX(lane), HIT_Y - 20, "MISS", [255, 80, 80]);
       }
     }
 
-    // ── Keyboard input (A S D F G = lanes 0-4) ───────────────────────────────
-    const LANE_KEYS = ["a", "s", "d", "f", "g"] as const;
-    LANE_KEYS.forEach((key, lane) => {
-      k.onKeyPress(key as string, () => tryHitLane(lane));
-    });
-    // Arrow keys for 5 lanes: left=0, down=1, up=2, right=3, space=4
-    k.onKeyPress("left",  () => tryHitLane(0));
-    k.onKeyPress("down",  () => tryHitLane(1));
-    k.onKeyPress("up",    () => tryHitLane(2));
-    k.onKeyPress("right", () => tryHitLane(3));
-    k.onKeyPress("space", () => tryHitLane(4));
+    // Lane pop flash
+    function lanePop(lane: number, col: RGB): void {
+      const f = k.add([
+        k.pos(laneX(lane), HIT_Y),
+        k.anchor("center"),
+        k.opacity(0.75),
+      ]);
+      let age = 0;
+      f.onDraw(() => {
+        k.drawCircle({ pos: k.vec2(0, 0), radius: (STAR_R + 10) * (1 + age * 2), color: k.rgb(...col), opacity: Math.max(0, 0.75 - age * 3) });
+      });
+      f.onUpdate(() => {
+        age += k.dt();
+        if (age > 0.25) k.destroy(f);
+      });
+    }
 
-    // ── Touch / click input ───────────────────────────────────────────────────
+    // ── Input ────────────────────────────────────────────────────────────────
+    const KEY_MAP: Record<string, number> = { a: 0, s: 1, d: 2, f: 3 };
+    k.onKeyPress((key) => {
+      const lane = KEY_MAP[key];
+      if (lane !== undefined) tryHit(lane);
+    });
+
     k.onMousePress(() => {
       const mp = k.mousePos();
-      // Determine lane by x position
-      let closestLane = 0;
-      let closestDist = Infinity;
+      let best = 0;
+      let bestD = Infinity;
       for (let i = 0; i < LANE_COUNT; i++) {
         const d = Math.abs(mp.x - laneX(i));
-        if (d < closestDist) { closestDist = d; closestLane = i; }
+        if (d < bestD) { bestD = d; best = i; }
       }
-      tryHitLane(closestLane);
+      tryHit(best);
     });
 
-    // ── Main update loop ──────────────────────────────────────────────────────
+    // ── Main update ───────────────────────────────────────────────────────────
     k.onUpdate(() => {
       const dt = k.dt();
       gameTime += dt;
       elapsed  += dt;
 
-      // Ramp BPM
-      bpm = Math.min(BPM_MAX, BPM_START + elapsed * BPM_RAMP);
+      // BPM ramp → beat pulse
+      const bpm     = Math.min(BPM_MAX, BPM_START + elapsed * BPM_RAMP);
       const beatLen = 60 / bpm;
       beatPhase += dt / beatLen;
-      if (beatPhase >= 1) {
-        beatPhase -= 1;
-        beatCount++;
+      if (beatPhase >= 1) beatPhase -= 1;
+
+      // Generate beat times up to LEAD_TIME seconds ahead
+      generateBeats(gameTime + LEAD_TIME + 0.5);
+
+      // Spawn notes for beats we haven't spawned yet
+      while (nextBeatIdx < beatTimes.length) {
+        const bt = beatTimes[nextBeatIdx];
+        if (bt === undefined) break;
+        if (bt > gameTime + LEAD_TIME) break;
+        spawnNote(bt);
+        nextBeatIdx++;
       }
 
-      // Beat ring pulse
-      const pulse = Math.pow(Math.max(0, 1 - beatPhase * 2), 2);
-      beatRing.opacity = 0.3 + pulse * 0.7;
-      const rs = 1 + pulse * 0.5;
-      beatRing.scale = k.vec2(rs, rs);
+      // Move notes
+      for (const n of notes) {
+        if (n.done) continue;
+        const timeUntil = n.hitTime - gameTime;
+        const progress  = 1 - timeUntil / LEAD_TIME;
+        n.obj.pos.y = -STAR_R * 2 + (HIT_Y + STAR_R * 2) * Math.max(0, Math.min(1, progress));
 
-      // Schedule new stars
-      scheduleBeats();
-
-      // Move stars downward
-      const travelSecs = STAR_FALL_MS / 1000;
-      for (const sd of stars) {
-        if (sd.hit || sd.missed) continue;
-        const timeUntilHit = sd.beatTime - gameTime;
-        // Position: from off-screen top to HIT_ZONE_Y
-        const progress = 1 - (timeUntilHit / travelSecs);
-        const startY = -STAR_RADIUS * 2;
-        sd.obj.pos.y = startY + (HIT_ZONE_Y - startY) * Math.min(1, Math.max(0, progress));
-
-        // If star passed the hit zone without being hit
-        if (timeUntilHit < -HIT_GOOD && !sd.missed) {
-          sd.missed = true;
-          k.destroy(sd.obj);
+        // Missed
+        if (timeUntil < -HIT_GOOD) {
+          n.done = true;
+          k.destroy(n.obj);
           lives--;
           combo = 0;
           comboTxt.text = "";
-          updateHearts();
-          floatText(laneX(sd.lane), HIT_ZONE_Y - 30, "MISS!", [255, 60, 60]);
+          refreshHearts();
+          floatLabel(k, laneX(n.lane), HIT_Y - 30, "MISS!", [255, 60, 60]);
 
           if (lives <= 0) {
-            // Save high score
-            if (score > highScore) {
-              highScore = score;
-              localStorage.setItem("beatstar2_hs", String(highScore));
+            if (score > globalHigh) {
+              globalHigh = score;
+              localStorage.setItem("beatstar2_hs", String(globalHigh));
             }
-            k.wait(0.4, () => k.go("over", { score, maxCombo, highScore }));
+            k.wait(0.5, () => k.go("over", { score, maxCombo, high: globalHigh }));
           }
         }
       }
 
-      // Clean up hit/missed stars from array
-      for (let i = stars.length - 1; i >= 0; i--) {
-        const sd = stars[i];
-        if (sd && (sd.hit || sd.missed)) stars.splice(i, 1);
+      // Prune done notes
+      for (let i = notes.length - 1; i >= 0; i--) {
+        if (notes[i]?.done) notes.splice(i, 1);
       }
     });
   });
 
-  // ── GAME OVER scene ───────────────────────────────────────────────────────
-  k.scene("over", (data: { score: number; maxCombo: number; highScore: number }) => {
-    addBackgroundStars();
+  // ── GAME OVER ─────────────────────────────────────────────────────────────
+  k.scene("over", (data: { score: number; maxCombo: number; high: number }) => {
+    addBgStars(k);
 
-    const isNewBest = data.score >= data.highScore && data.score > 0;
+    const newBest = data.score > 0 && data.score >= data.high;
 
     k.add([
-      k.text("GAME OVER", { size: 48, font: "sans-serif" }),
+      k.text("GAME OVER", { size: 50, font: "sans-serif" }),
       k.anchor("center"),
-      k.pos(VW / 2, VH * 0.2),
+      k.pos(VW / 2, VH * 0.18),
       k.color(255, 80, 120),
     ]);
 
-    if (isNewBest) {
+    if (newBest) {
       k.add([
-        k.text("🏆 NEW BEST! 🏆", { size: 26, font: "sans-serif" }),
+        k.text("🏆 NEW BEST! 🏆", { size: 28, font: "sans-serif" }),
         k.anchor("center"),
-        k.pos(VW / 2, VH * 0.31),
-        k.color(255, 220, 60),
+        k.pos(VW / 2, VH * 0.29),
+        k.color(255, 220, 50),
       ]);
     }
 
     k.add([
-      k.text(`Score: ${data.score}`, { size: 34, font: "sans-serif" }),
+      k.text(`Score: ${data.score}`, { size: 36, font: "sans-serif" }),
       k.anchor("center"),
-      k.pos(VW / 2, VH * 0.41),
+      k.pos(VW / 2, VH * 0.4),
       k.color(255, 255, 255),
     ]);
 
     k.add([
-      k.text(`Best Combo: x${data.maxCombo}`, { size: 22, font: "sans-serif" }),
+      k.text(`Best Combo: ×${data.maxCombo}`, { size: 22, font: "sans-serif" }),
       k.anchor("center"),
-      k.pos(VW / 2, VH * 0.5),
-      k.color(180, 160, 255),
+      k.pos(VW / 2, VH * 0.49),
+      k.color(180, 150, 255),
     ]);
 
     k.add([
-      k.text(`High Score: ${data.highScore}`, { size: 20, font: "sans-serif" }),
+      k.text(`High Score: ${data.high}`, { size: 20, font: "sans-serif" }),
       k.anchor("center"),
-      k.pos(VW / 2, VH * 0.58),
-      k.color(255, 200, 60),
+      k.pos(VW / 2, VH * 0.57),
+      k.color(255, 200, 50),
     ]);
 
-    // Celebration stars burst
-    for (let i = 0; i < 5; i++) {
-      k.wait(i * 0.12, () => {
-        burst(
-          VW * 0.15 + Math.random() * VW * 0.7,
-          VH * 0.25 + Math.random() * VH * 0.3,
-          randomColor()
-        );
+    // Confetti burst
+    for (let i = 0; i < 6; i++) {
+      k.wait(i * 0.1, () => {
+        burst(k, VW * 0.1 + Math.random() * VW * 0.8, VH * 0.2 + Math.random() * VH * 0.35, randColor());
       });
     }
 
     // Play again button
     const btn = k.add([
-      k.rect(220, 64, { radius: 32 }),
+      k.rect(230, 68, { radius: 34 }),
       k.color(120, 80, 255),
       k.area(),
       k.anchor("center"),
       k.pos(VW / 2, VH * 0.72),
-      {
-        pulse: 0,
-        update(this: GameObj & { pulse: number }) {
-          this.pulse += k.dt();
-          const s = 1 + 0.04 * Math.sin(this.pulse * 3);
-          this.scale = k.vec2(s, s);
-        },
-      },
     ]);
+    let btnP = 0;
+    btn.onUpdate(() => {
+      btnP += k.dt();
+      const s = 1 + 0.04 * Math.sin(btnP * 2.8);
+      btn.scale = k.vec2(s, s);
+    });
     k.add([
-      k.text("▶  PLAY AGAIN", { size: 24, font: "sans-serif" }),
+      k.text("▶  PLAY AGAIN", { size: 26, font: "sans-serif" }),
       k.anchor("center"),
       k.pos(VW / 2, VH * 0.72),
       k.color(255, 255, 255),
     ]);
-
     k.add([
-      k.text("tap or press SPACE", { size: 15, font: "sans-serif" }),
+      k.text("tap · SPACE · ENTER", { size: 15, font: "sans-serif" }),
       k.anchor("center"),
       k.pos(VW / 2, VH * 0.82),
-      k.color(120, 100, 180),
+      k.color(110, 90, 170),
     ]);
 
     btn.onClick(() => k.go("play"));
@@ -662,6 +642,5 @@ export function startGame(
   });
 
   k.go("menu");
-
   return () => k.quit();
 }
